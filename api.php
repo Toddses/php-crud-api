@@ -1,4 +1,7 @@
 <?php
+require_once('php-jwt/src/JWT.php');
+use Firebase\JWT\JWT;
+
 class MySQL_CRUD_API extends REST_CRUD_API {
 
 	protected $queries = array(
@@ -477,10 +480,14 @@ class REST_CRUD_API {
 
 	protected $settings;
 
-	protected function mapMethodToAction($method,$key) {
+	protected function mapMethodToAction($method,$key,$login) {
 		switch ($method) {
 			case 'OPTIONS': $this->exitWithCorsHeaders();
-			case 'GET': return $key?'read':'list';
+			case 'GET':
+                if ($login === 'true')
+                    return 'login';
+                else
+                    return $key?'read':'list';
 			case 'PUT': return 'update';
 			case 'POST': return 'create';
 			case 'DELETE': return 'delete';
@@ -831,9 +838,13 @@ class REST_CRUD_API {
 	protected function getParameters($settings) {
 		extract($settings);
 
+        $email    = $this->parseGetParameter($get, 'email', 'a-zA-Z0-9\.\-@', false);
+        $password = $this->parseGetParameter($get, 'password', '', false);
+        $login    = $this->parseGetParameter($get, 'login', 'truefals', false);
+
 		$table     = $this->parseRequestParameter($request, 'a-zA-Z0-9\-_*,', false);
 		$key       = $this->parseRequestParameter($request, 'a-zA-Z0-9\-,', false); // auto-increment or uuid
-		$action    = $this->mapMethodToAction($method,$key);
+		$action    = $this->mapMethodToAction($method,$key,$login);
 		$callback  = $this->parseGetParameter($get, 'callback', 'a-zA-Z0-9\-_', false);
 		$page      = $this->parseGetParameter($get, 'page', '0-9,', false);
 		$filters   = $this->parseGetParameterArray($get, 'filter', false, false);
@@ -868,8 +879,83 @@ class REST_CRUD_API {
 
 		if (!empty($input)) $input = $this->convertBinary($input,$columns[$table[0]]);
 
-		return compact('action','database','table','key','callback','page','filters','satisfy','columns','order','transform','db','input','collect','select');
+		return compact('action','database','table','key','email','password','login','callback','page','filters','satisfy','columns','order','transform','db','input','collect','select');
 	}
+
+    protected function buildToken () {
+        $secret = 'NeIlflIG7+Mn6q3qYf8rHf6jduYBkg8FXqVSaMuARYQAriaw/nQzjmVSnC/RFhZpdi97THSIcxLk3hMD1eH3lQ==';
+        $tokenId    = base64_encode(mcrypt_create_iv(32));
+        $issuedAt   = time();
+        $notBefore  = $issuedAt + 10;             //Adding 10 seconds
+        $expire     = $notBefore + 60;            // Adding 60 seconds
+        //$serverName = $config->get('serverName'); // Retrieve the server name from config file
+
+        /*
+         * Create the token as an array
+         */
+        $data = [
+            'iat'  => $issuedAt,         // Issued at: time when the token was generated
+            'jti'  => $tokenId,          // Json Token Id: an unique identifier for the token
+            //'iss'  => $serverName,       // Issuer
+            'nbf'  => $notBefore,        // Not before
+            'exp'  => $expire,           // Expire
+            'data' => [                  // Data related to the signer user
+                'userId' => 'a6', // userid from the users table
+                'email' => 'todd@rainydaymedia.net', // User name
+            ]
+        ];
+
+        $secretKey = base64_decode($secret);
+
+        $jwt = JWT::encode(
+            $data,      //Data to be encoded in the JWT
+            $secretKey, // The signing key
+            'HS512'     // Algorithm used to sign the token, see https://tools.ietf.org/html/draft-ietf-jose-json-web-algorithms-40#section-3
+            );
+
+        return $jwt;
+    }
+
+    protected function loginCommand($parameters) {
+        extract($parameters);
+
+        $tables = $table;
+        $table = array_shift($tables);
+
+        $params = array();
+        $email = $parameters['email'];
+        $pass  = $parameters['password'];
+        $sql = 'SELECT * FROM "!" WHERE "!" = ? AND "!" = ?';
+        $params[] = $table;
+        $params[] = 'email';
+        $params[] = 'todd@rainydaymedia.net';
+        $params[] = 'password';
+        $params[] = 'todd';
+
+        if ($result = $this->query($db, $sql, $params)) {
+            if ($result->num_rows === 0) {
+                $this->exitWith403('user');
+            }
+            $row = $this->fetch_row($result);
+            $id = $row[6];
+            $token = $this->buildToken();
+
+            $params = array();
+            $sql = 'UPDATE "!" SET "!" = ? WHERE "!" = ?';
+            $params[] = $table;
+            $params[] = 'jwt';
+            $params[] = $token;
+            $params[] = 'id';
+            $params[] = $id;
+            $result = $this->query($db, $sql, $params);
+            echo '{';
+            echo '"uuid": "'.$row[0].'",';
+            echo '"jwt": "'.$token.'",';
+            echo '"expire": "'.time().'"';
+            echo '}';
+        }
+        return;
+    }
 
 	protected function listCommandInternal($parameters) {
 		extract($parameters);
@@ -1161,6 +1247,7 @@ class REST_CRUD_API {
 		}
 		$parameters = $this->getParameters($this->settings);
 		switch($parameters['action']){
+            case 'login': $this->loginCommand($parameters); break;
 			case 'list': $this->listCommand($parameters); break;
 			case 'read': $this->readCommand($parameters); break;
 			case 'create': $this->createCommand($parameters); break;
@@ -1173,14 +1260,14 @@ class REST_CRUD_API {
 
 // uncomment the lines below when running in stand-alone mode:
 
-// $api = new MySQL_CRUD_API(array(
-// 	'hostname'=>'localhost',
-//	'username'=>'xxx',
-//	'password'=>'xxx',
-//	'database'=>'xxx',
-// 	'charset'=>'utf8'
-// ));
-// $api->executeCommand();
+$api = new MySQL_CRUD_API(array(
+    'hostname'=>'localhost',
+    'username'=>'root',
+    'password'=>'root',
+    'database'=>'restful',
+    'charset'=>'utf8'
+));
+$api->executeCommand();
 
 // For Microsoft SQL Server use:
 
